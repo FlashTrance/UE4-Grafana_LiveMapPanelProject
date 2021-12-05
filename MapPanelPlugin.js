@@ -522,7 +522,7 @@ System.register(["./leaflet/leaflet.js", "moment", "app/core/app_events", "app/p
 
         {
           key: "onInitEditMode",
-          value: function onInitEditMode() { this.addEditorTab('Options', 'public/plugins/ktlas-trackmap-panel/partials/options.html', 2); }
+          value: function onInitEditMode() { this.addEditorTab('Options', 'public/plugins/trackmap-panel/partials/options.html', 2); }
         }, 
 
         {
