@@ -1,32 +1,44 @@
-// THIS IS THE REST API PROGRAM THAT UE4 SENT DATA TO. FROM HERE, THE DATA WAS STORED IN A POSTGRESQL DB AND PULLED IN BY GRAFANA.
+// THIS IS THE REST API PROGRAM THAT UE4 SENT DATA TO. FROM HERE, THE DATA IS SCRAPED BY PROMETHEUS AND PULLED DIRECTLY INTO THE GRAFANA DASHBOARD.
 // ---------------------------------------------------------------
 
 // IMPORTS
 const cors = require('cors');
-const express = require('express');
-const bodyParser = require('body-parser');
-const { Client } = require('pg');
+const express = require("express");
+const pc = require("prom-client");
+const register = require("prom-client").register;
+const bodyParser = require("body-parser");
 
 
 // GLOBAL VARS
 const listenPort = process.env.PORT || 3000; // Checks for env variable called port, otherwise uses specified value
 const app = express();
-
-const DB_USER = '';
-const DB_PW = '';
-const DB_NAME = '';
-const TABLE_NAME = '';
-const SERVER_IP = '';
+const incidents_finished = []; 	  		 // Used for "incident_times_gauge"
+const incidents_finished_times = []; 		 // -------------------------------
 
 
-// SETUP POSTGRESQL CONNECTION
-const client = new Client({
-	user: DB_USER,
-	host: SERVER_IP,
-	database: DB_NAME,
-	password: DB_PW,
-	port: 5432,
-});
+// PROMETHEUS METRICS
+const speed_gauge_kmh = new pc.Gauge({ name: 'da_vehicle_speed_kmh', help: 'The speed of the simulated vehicle (km/h)' });
+const speed_gauge_mph = new pc.Gauge({ name: 'da_vehicle_speed_mph', help: 'The speed of the simulated vehicle (mph)' });
+const speedlimit_gauge_kmh = new pc.Gauge({ name: 'da_speedlimit_kmh', help: 'The speed limit of the current road (km/h)' });
+const speedlimit_gauge_mph = new pc.Gauge({ name: 'da_speedlimit_mph', help: 'The speed limit of the current road (mph)' });
+const distance_traveled_gauge_km = new pc.Gauge({ name: 'da_vehicle_dist_traveled_km', help: 'Total distance driven (km)' });
+const distance_traveled_gauge_mi = new pc.Gauge({ name: 'da_vehicle_dist_traveled_mi', help: 'Total distance driven (mi)' });
+const incident_times_gauge = new pc.Gauge({ name: 'da_incident_times_gauge', help: 'incident time - Minutes since previous incident stop', labelNames: ['stop']});
+const total_time_working_gauge_min = new pc.Gauge({ name: 'da_vehicle_minutes_worked', help: 'Total time spent working (min)' });
+const total_incidents_gauge = new pc.Gauge({ name: 'da_total_incidents', help: 'Total # of incidents to be addressed today.' });
+const current_incidents_gauge = new pc.Gauge({ name: 'da_current_incidents', help: 'Current # of incidents already addressed today.' });
+const latitude_gauge = new pc.Gauge({ name: 'da_vehicle_lat', help: 'The latitudinal location of the vehicle' });
+const longitude_gauge = new pc.Gauge({ name: 'da_vehicle_long', help: 'The longitudinal location of the vehicle' });
+const event_type_gauge = new pc.Gauge({ name: 'da_event_type', help: 'Integer value representing an event type.' });
+speed_gauge_kmh.set(0);
+speed_gauge_mph.set(0);
+speedlimit_gauge_mph.set(0);
+distance_traveled_gauge_km.set(0);
+distance_traveled_gauge_mi.set(0);
+total_time_working_gauge_min.set(0);
+latitude_gauge.set(39.115543);   // This location is the intersection of Minnesota Ave and North 18th St (Kansas City)
+longitude_gauge.set(-94.649231); // '''
+event_type_gauge.set(-1);
 
 
 // SETUP REST SERVER
@@ -35,24 +47,24 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({extended: false}));
 
 
-// CONNECT TO POSTGRESQL
-client.connect( (err) => 
-{ 
-	if (err) 
-	{ 
-		console.error("Failed to connect to PostgreSQL server!");
-		process.exit(); 
-	} 
+// START REST SERVER
+app.listen(listenPort, () => 
+{
+	console.log("Server running on port %d", listenPort);
+});
 
-	else
+
+// GET ROUTES
+app.get("/metrics", async (req, res) => 
+{
+	try
 	{
-		console.log("Successfully connected to PostgreSQL server @ " + SERVER_IP + " as user " + DB_USER);
-
-		// START REST SERVER
-		app.listen(listenPort, () => 
-		{
-			console.log("REST server running on port %d", listenPort);
-		});
+		res.set('Content-Type', register.contentType);
+		res.end(await register.metrics());
+	} 
+	catch (error) 
+	{
+		res.status(500).end(error);
 	}
 });
 
@@ -110,19 +122,51 @@ app.post("/sim_data", (req, res) =>
 	const totalIncidents = req.body.totalIncidents;
 	const currentIncidents = req.body.currentIncidents;
 
-	// Setup DB query
-	var db_query = '', query_params = '';
-	db_query = 'INSERT INTO ' + TABLE_NAME + '(lat, lng, event_type, event_data, officer_data, map_data) values($1, $2, $3, $4, $5, $6)'; 
-	var event_data = {'eventDesc': 'Some custom string from database', 'POI': pOI};
-	var officer_data = {"vehicleID": asset, "vehicleSpeed": parseInt(speedMPH), "distanceTraveled": distanceMI, "totalTimeWorked": totalTimeWorked};
-	var map_data = {"city": city, "street": street, "speedLimit": parseInt(speedLimitMPH)};
-	query_params = [latitude, longitude, eventType, event_data, officer_data, map_data];
-
-	// Send query to DB
-	client.query(db_query, query_params, (err, res) => 
+	// Set incident times gauge
+	if (parseInt(currentIncidents) > 0 && !incidents_finished.includes(currentIncidents) && parseInt(currentIncidents) <= 4)
 	{
-		if (err) { throw err; }
-		// else { console.info("Successfully inserted data into DB."); }
-	});
+		incidents_finished.push(currentIncidents);
+		incidents_finished_times.push(totalTimeWorked);
+		if (incidents_finished.length < 2) { incident_times_gauge.labels(currentIncidents).set(parseInt(totalTimeWorked)); }
+		else 
+		{ 
+			new_time = parseInt(incidents_finished_times[parseInt(currentIncidents)-1]) - 
+							parseInt(incidents_finished_times[parseInt(currentIncidents)-2]);
+			incident_times_gauge.labels(currentIncidents).set(new_time); 
+		}
+	}
+
+	// Assign eventType an integer (have to do this as long as we're using Prometheus)
+	var eventInt = -1;
+	if (eventType == "TrafficLight") { eventInt = 0; }
+	else if (eventType == "Incident") { eventInt = 1; }
+	else if (eventType == "Break") { eventInt = 2; }
+	else if (eventType == "TrafficJam") { eventInt = 3; }
+
+	// Set Prometheus metrics
+	setMetrics(parseFloat(speedKMH), parseFloat(speedMPH), parseFloat(speedLimitKMH), parseFloat(speedLimitMPH), parseFloat(distanceKM), 
+				parseFloat(distanceMI), parseInt(totalTimeWorked), parseInt(totalIncidents), parseInt(currentIncidents), 
+				parseFloat(latitude), parseFloat(longitude), eventInt);
+
+	// Let the client know everything is OK (IMPORTANT!!!)
 	res.sendStatus(200);
 });
+
+
+// setMetrics() - SET PROMETHEUS METRICS
+function setMetrics(speedKMH, speedMPH, speedLimitKMH, speedLimitMPH, distanceKM, distanceMI, timeWorkedMin, totalIncidents, 
+	currentIncidents, lat, long, eventInt)
+{
+	speed_gauge_kmh.set(speedKMH);
+	speed_gauge_mph.set(speedMPH);
+	speedlimit_gauge_kmh.set(speedLimitKMH);
+	speedlimit_gauge_mph.set(speedLimitMPH);
+	distance_traveled_gauge_km.set(distanceKM);
+	distance_traveled_gauge_mi.set(distanceMI);
+	total_time_working_gauge_min.set(timeWorkedMin);
+	total_incidents_gauge.set(totalIncidents);
+	current_incidents_gauge.set(currentIncidents);
+	latitude_gauge.set(lat);
+	longitude_gauge.set(long);
+	event_type_gauge.set(eventInt);
+}
