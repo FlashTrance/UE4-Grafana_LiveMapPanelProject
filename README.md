@@ -1,6 +1,6 @@
 # UE4->Grafana Live Map Panel Project
 
-Excerpts from the video presentation and live demonstrations I did, which include explanations of the UE4 source code and process, can be found here: []
+Excerpts from the video presentation and live demonstrations I did, which include explanations of the UE4 source code and process, can be found here: https://youtu.be/LHpK8iGORKM
 
 This repo contains samples of work I did as part of a federal contract for MFLEETS (nothing here is covered under an NDA, but some code has been altered where necessary). This was an R&D project to develop a real-time tracking dashboard for police supervisors. 
 
